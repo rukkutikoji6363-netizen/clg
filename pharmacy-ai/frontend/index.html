@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pharmacy AI</title>
+<style>
+:root{--paper:#f3f6f5;--ink:#14211d;--muted:#5d6f69;--line:#d6e0dc;--green:#0e7c5a;--amber:#b86e00;--red:#b3261e;--card:#fff}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif;background:var(--paper);color:var(--ink);display:flex;min-height:100vh}
+nav{width:210px;background:var(--ink);color:#e8f1ee;padding:22px 14px;flex-shrink:0}
+nav h1{font-size:18px;margin:0 8px 22px;font-weight:600}
+nav button{display:block;width:100%;text-align:left;background:none;border:0;color:inherit;padding:10px 12px;border-radius:6px;font:inherit;cursor:pointer}
+nav button:hover{background:#22352f}nav button.on{background:var(--green)}
+main{flex:1;padding:26px 30px;max-width:1100px;min-width:0}
+h2{margin:0 0 16px;font-size:22px}h3{margin:20px 0 8px;font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+.stats{display:flex;gap:14px;flex-wrap:wrap}.stat{flex:1;min-width:150px}.stat b{display:block;font-size:26px}
+table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+th{color:var(--muted);font-weight:500}.scroll{overflow-x:auto}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;max-width:100%}
+textarea{width:100%;min-height:90px}
+button.btn{background:var(--green);color:#fff;border:0;padding:8px 14px;border-radius:6px;font:inherit;cursor:pointer}
+button.btn.sec{background:#fff;color:var(--ink);border:1px solid var(--line)}button.btn:disabled{opacity:.5}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.tag{padding:2px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
+.ok{background:#dff3ea;color:#0a5a41}.warn{background:#fdecc8;color:#7a4700}.bad{background:#fadbd8;color:#8a1b15}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
+.chat{height:380px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px}
+.msg{padding:10px 12px;border-radius:8px;max-width:85%;white-space:pre-wrap}
+.msg.user{background:var(--green);color:#fff;align-self:flex-end}.msg.assistant{background:#eaf0ee;align-self:flex-start}
+.out{white-space:pre-wrap;background:#eaf0ee;border-radius:8px;padding:12px;margin-top:10px}
+.note{color:var(--muted);font-size:13px}#toast{position:fixed;bottom:18px;right:18px;background:var(--ink);color:#fff;padding:10px 14px;border-radius:6px;display:none}
+@media(max-width:700px){body{flex-direction:column}nav{width:100%;display:flex;flex-wrap:wrap;gap:4px;padding:10px}nav h1{width:100%;margin:0 0 4px}nav button{width:auto}main{padding:16px}}
+</style>
+</head>
+<body>
+<nav>
+  <h1>Pharmacy AI</h1>
+  <button data-t="dash" class="on">Dashboard</button>
+  <button data-t="inv">Inventory</button>
+  <button data-t="bill">Billing</button>
+  <button data-t="ai">AI assistant</button>
+</nav>
+<main>
+<section id="dash"></section>
+<section id="inv" hidden></section>
+<section id="bill" hidden></section>
+<section id="ai" hidden></section>
+</main>
+<div id="toast" role="status"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const today = new Date().toISOString().slice(0, 10);
+const money = n => "₹" + Number(n).toFixed(2);
+
+async function api(path, method = "GET", body) {
+  const r = await fetch("/api" + path, {method, headers: {"Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || "Request failed");
+  return data;
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", 3500); }
+function stockTag(m) {
+  if (m.expiry_date < today) return '<span class="tag bad">Expired</span>';
+  if (m.quantity <= m.reorder_level) return '<span class="tag warn">Low stock</span>';
+  return '<span class="tag ok">In stock</span>';
+}
+
+// ---- tabs ----
+const loaders = {dash: loadDash, inv: loadInv, bill: loadBill, ai: loadAI};
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("main section").forEach(s => s.hidden = s.id !== b.dataset.t);
+  loaders[b.dataset.t]();
+});
+
+// ---- dashboard ----
+async function loadDash() {
+  const d = await api("/dashboard");
+  const rows = (list, extra) => list.length ? list.map(m => `<tr><td>${esc(m.name)}</td><td>${extra(m)}</td></tr>`).join("") : '<tr><td colspan="2" class="note">Nothing here.</td></tr>';
+  $("#dash").innerHTML = `<h2>Dashboard</h2>
+  <div class="stats">
+    <div class="card stat"><span class="note">Sales today</span><b>${d.today.n}</b></div>
+    <div class="card stat"><span class="note">Revenue today</span><b>${money(d.today.revenue)}</b></div>
+    <div class="card stat"><span class="note">Medicines</span><b>${d.total_medicines}</b></div>
+  </div>
+  <div class="card"><h3 style="margin-top:0">Low stock (${d.low_stock.length})</h3><table>${rows(d.low_stock, m => `${m.quantity} left, reorder at ${m.reorder_level}`)}</table></div>
+  <div class="card"><h3 style="margin-top:0">Expired or expiring within 30 days (${d.expiring.length})</h3><table>${rows(d.expiring, m => `${esc(m.expiry_date)} ${m.expiry_date < today ? '<span class="tag bad">Expired</span>' : ""}`)}</table></div>`;
+}
+
+// ---- inventory ----
+let editing = null;
+async function loadInv() {
+  const search = $("#q") ? $("#q").value : "";
+  const list = await api("/medicines?search=" + encodeURIComponent(search));
+  $("#inv").innerHTML = `<h2>Inventory</h2>
+  <div class="row"><input id="q" placeholder="Search by brand or generic name" value="${esc(search)}"><button class="btn sec" onclick="loadInv()">Search</button></div>
+  <div class="card scroll"><table><tr><th>Name</th><th>Generic</th><th>Batch</th><th>Expiry</th><th>Qty</th><th>Price</th><th>Status</th><th></th></tr>
+  ${list.map(m => `<tr><td>${esc(m.name)}</td><td>${esc(m.generic_name)}</td><td>${esc(m.batch_no)}</td><td>${esc(m.expiry_date)}</td><td>${m.quantity}</td><td>${money(m.price)}</td><td>${stockTag(m)}</td>
+  <td><button class="btn sec" onclick="editMed(${m.id})">Edit</button> <button class="btn sec" onclick="delMed(${m.id})">Delete</button></td></tr>`).join("")}</table></div>
+  <div class="card"><h3 style="margin-top:0" id="ftitle">Add medicine</h3><div class="form">
+    ${[["name","Name"],["generic_name","Generic name"],["category","Category"],["batch_no","Batch no."],["supplier","Supplier"]].map(([k,l]) => `<input id="f_${k}" placeholder="${l}">`).join("")}
+    <input id="f_expiry_date" type="date" title="Expiry date"><input id="f_quantity" type="number" min="0" placeholder="Quantity">
+    <input id="f_reorder_level" type="number" min="0" placeholder="Reorder level"><input id="f_price" type="number" min="0" step="0.01" placeholder="Price"></div>
+  <div class="row" style="margin-top:10px"><button class="btn" onclick="saveMed()">Save medicine</button><button class="btn sec" onclick="editing=null;loadInv()">Clear form</button></div></div>`;
+  $("#q").onkeydown = e => { if (e.key === "Enter") loadInv(); };
+  window._meds = list;
+}
+const fields = ["name","generic_name","category","batch_no","supplier","expiry_date","quantity","reorder_level","price"];
+function editMed(id) {
+  const m = window._meds.find(x => x.id === id); editing = id;
+  fields.forEach(k => $("#f_" + k).value = m[k]); $("#ftitle").textContent = "Edit " + m.name; scrollTo(0, document.body.scrollHeight);
+}
+async function saveMed() {
+  const b = {}; fields.forEach(k => b[k] = $("#f_" + k).value);
+  ["quantity","reorder_level"].forEach(k => b[k] = parseInt(b[k] || 0)); b.price = parseFloat(b.price || 0);
+  if (!b.name || !b.expiry_date) return toast("Name and expiry date are required.");
+  try { editing ? await api("/medicines/" + editing, "PUT", b) : await api("/medicines", "POST", b); toast("Medicine saved."); editing = null; loadInv(); }
+  catch (e) { toast(e.message); }
+}
+async function delMed(id) {
+  if (!confirm("Delete this medicine?")) return;
+  try { await api("/medicines/" + id, "DELETE"); toast("Medicine deleted."); loadInv(); } catch (e) { toast(e.message); }
+}
+
+// ---- billing ----
+let cart = [];
+async function loadBill() {
+  const meds = await api("/medicines"); window._all = meds;
+  const total = cart.reduce((s, c) => s + c.qty * c.price, 0);
+  $("#bill").innerHTML = `<h2>Billing</h2>
+  <div class="card"><div class="row"><select id="b_med">${meds.filter(m => m.quantity > 0 && m.expiry_date >= today).map(m => `<option value="${m.id}">${esc(m.name)} (${m.quantity} in stock, ${money(m.price)})</option>`).join("")}</select>
+  <input id="b_qty" type="number" min="1" value="1" style="width:80px"><button class="btn" onclick="addCart()">Add to bill</button></div>
+  <table><tr><th>Item</th><th>Qty</th><th>Amount</th><th></th></tr>
+  ${cart.length ? cart.map((c, i) => `<tr><td>${esc(c.name)}</td><td>${c.qty}</td><td>${money(c.qty * c.price)}</td><td><button class="btn sec" onclick="cart.splice(${i},1);loadBill()">Remove</button></td></tr>`).join("") : '<tr><td colspan="4" class="note">The bill is empty. Pick a medicine above.</td></tr>'}</table>
+  <h3>Total ${money(total)}</h3><div class="row"><input id="b_cust" placeholder="Customer name (optional)"><button class="btn" onclick="checkout()" ${cart.length ? "" : "disabled"}>Complete sale</button></div></div>`;
+}
+function addCart() {
+  const m = window._all.find(x => x.id == $("#b_med").value); if (!m) return;
+  const qty = parseInt($("#b_qty").value || 1), have = cart.find(c => c.id === m.id);
+  if ((have ? have.qty : 0) + qty > m.quantity) return toast(`Only ${m.quantity} of ${m.name} in stock.`);
+  have ? have.qty += qty : cart.push({id: m.id, name: m.name, price: m.price, qty}); loadBill();
+}
+async function checkout() {
+  try { const r = await api("/sales", "POST", {customer: $("#b_cust").value, items: cart.map(c => ({medicine_id: c.id, qty: c.qty}))});
+    cart = []; toast(`Sale #${r.id} completed: ${money(r.total)}`); loadBill(); } catch (e) { toast(e.message); }
+}
+
+// ---- AI assistant ----
+let history = [];
+function loadAI() {
+  if ($("#chatbox")) return;
+  $("#ai").innerHTML = `<h2>AI assistant</h2>
+  <div class="card"><h3 style="margin-top:0">Ask about your pharmacy</h3><div class="chat" id="chatbox"></div>
+  <div class="row" style="margin-top:10px"><input id="chatin" style="flex:1" placeholder="e.g. Which antibiotics expire in the next 30 days?"><button class="btn" id="chatbtn" onclick="sendChat()">Send</button></div>
+  <p class="note">Answers use live inventory and sales data. Clinical information is reference only; a pharmacist must verify it.</p></div>
+  <div class="card"><h3 style="margin-top:0">Drug information</h3><div class="row"><input id="drug" placeholder="Medicine name" style="flex:1"><button class="btn" onclick="aiCall('/ai/drug-info',{text:$('#drug').value},'drugout',this)">Get reference card</button></div><div id="drugout"></div></div>
+  <div class="card"><h3 style="margin-top:0">Read a prescription</h3><textarea id="rx" placeholder="Paste prescription text, e.g. Tab Augmentin 625 BD x 5 days, Tab Dolo 650 SOS"></textarea>
+  <div class="row" style="margin-top:8px"><button class="btn" onclick="readRx(this)">Match to inventory</button></div><div id="rxout"></div></div>
+  <div class="card"><h3 style="margin-top:0">Reorder suggestions</h3><button class="btn" onclick="aiCall('/ai/reorder',null,'reorderout',this)">Draft purchase orders</button><div id="reorderout"></div></div>`;
+  $("#chatin").onkeydown = e => { if (e.key === "Enter") sendChat(); };
+}
+function addMsg(role, text) { const d = document.createElement("div"); d.className = "msg " + role; d.textContent = text; $("#chatbox").append(d); d.scrollIntoView(); }
+async function sendChat() {
+  const t = $("#chatin").value.trim(); if (!t) return;
+  $("#chatin").value = ""; addMsg("user", t); history.push({role: "user", content: t}); $("#chatbtn").disabled = true;
+  try { const r = await api("/ai/chat", "POST", {messages: history}); history.push({role: "assistant", content: r.reply}); addMsg("assistant", r.reply); }
+  catch (e) { history.pop(); addMsg("assistant", e.message); }
+  $("#chatbtn").disabled = false;
+}
+async function aiCall(path, body, outId, btn) {
+  btn.disabled = true; $("#" + outId).innerHTML = '<div class="out">Working on it…</div>';
+  try { const r = await api(path, "POST", body); $("#" + outId).innerHTML = `<div class="out">${esc(r.reply)}</div>`; }
+  catch (e) { $("#" + outId).innerHTML = `<div class="out">${esc(e.message)}</div>`; }
+  btn.disabled = false;
+}
+async function readRx(btn) {
+  btn.disabled = true; $("#rxout").innerHTML = '<div class="out">Reading prescription…</div>';
+  try {
+    const r = await api("/ai/prescription", "POST", {text: $("#rx").value});
+    if (r.error) throw new Error(r.error);
+    $("#rxout").innerHTML = `<table><tr><th>Prescribed</th><th>Qty</th><th>Inventory match</th></tr>${r.items.map(i => `<tr><td>${esc(i.name)} ${esc(i.dosage)}</td><td>${esc(i.quantity)}</td>
+      <td>${i.matches.length ? i.matches.map(m => `${esc(m.name)} (${m.quantity} in stock, ${money(m.price)})`).join("<br>") : '<span class="tag bad">Not in stock</span>'}</td></tr>`).join("")}</table>
+      <p class="note">A pharmacist must verify each item before dispensing.</p>`;
+  } catch (e) { $("#rxout").innerHTML = `<div class="out">${esc(e.message)}</div>`; }
+  btn.disabled = false;
+}
+loadDash();
+</script>
+</body>
+</html>
